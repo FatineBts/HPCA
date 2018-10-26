@@ -58,46 +58,60 @@ __global__ void setup_kernel(curandState* state, unsigned long seed)
 }
 
 /*
-  Fonction qui va servir à effectuer les calculs sur GPU. 
+  Fonction qui va servir à générer des nombres différents pour chaque thread. 
 */
 
-__global__ void kernel(curandState* local_state, float* absorbed, float h, float n, float c, float c_c, float c_s, int* r, int* t, int* b) //uniquement les elements qui sont intialisés dans le main + r b et t
-{
 
-  float d = 0; 
-  float x = 0; 
+__device__ float generate(curandState* globalState, int ind) 
+{
+    curandState localState = globalState[ind];
+    float RANDOM = curand_uniform( &localState );
+    globalState[ind] = localState;
+    return RANDOM;
+}
+
+__global__ void kernel(curandState* globalState, float* absorbed, float h, float n, float c, float c_c, float c_s, int* result) //uniquement les elements qui sont intialisés dans le main + r b et t
+{
+  float d = 0.0; 
+  float x = 0.0; 
   float L;
   float u;
-  int i = blockDim.x*blockId.x + threadIdx.x; //sert de compteur 
-  //int r_updated, t_updated, b_updated = 0;     
-
+  int i = blockDim.x*blockIdx.x + threadIdx.x; //sert de compteur 
+  int prev; 
+  int r_updated = 0, t_updated = 0, b_updated = 0;     
+  //r, b, t, j res[0], res[1], res[2], res[3]
+  
+while(i<n){
   while (1) {
 
-    u = curand_uniform(&local_state); 
+    u = generate(globalState,i); 
     L = -(1 / c) * log(u);
     x = x + L * cos(d);
     if (x < 0) { //reflechi
-      atomicAdd(r,1);//r_updated++;
+      r_updated++;
       break;
     } 
     else if (x >= h) { //transmis
-      atomicAdd(t,1);//t_updated++;
+      t_updated++;
       break;
     } 
-    else if ((u = curand_uniform(&local_state)) < c_c / c) { //absorbé
-      atomicAdd(b,1);//b_updated++;
-      absorbed[atomicAdd(j,1)] = x;
+    else if ((u = generate(globalState,i)) < c_c / c) { //absorbé
+      b_updated++;
+      prev = atomicAdd(result+3,1); //communication interphread pas possible donc on veut l'atomicAdd pour pas écrire de manière concurente (on donne la main à 1 thread) 
+      absorbed[prev] = x; //ceci s'applique car on a besoin d'un stockage contigu. On utilise la variable prev car on l'incrementation se fait en 2 étapes donc on doit lui donner le temps
       break;
     } 
     else {
-      u = curand_uniform(&local_state);
+      u = generate(globalState,i);
       d = u * M_PI; //direction
     }
   }
-  
-  //atomicAdd(r,r_updated);
-  //atomicAdd(b,b_updated);
-  //atomicAdd(t,t_updated); 
+  i += gridDim.x*blockDim.x; //on ajoute le nombre de threads par bloc 
+  //atomicAdd fait du séquentiel, l'idée est qu'un thread traite plusieurs neutrons et puis quand il a fini, il update r, b et t donc les tableaux. Utiliser cette méthode permet de réduire le nombre d'atomicAdd et donc le temps de calcul
+  atomicAdd(result,r_updated); // le pb est qu'on a de l'interaction grace a atomicAdd or CUDA essaye d'éviter cela 
+  atomicAdd(result+1,b_updated);
+ atomicAdd(result+2,t_updated);
+ }//second while
 }
 
 /*
@@ -114,10 +128,10 @@ int main(int argc, char *argv[]) {
   if( argc == 1)
     fprintf( stderr, "%s\n", info);
 
-  float c_c, c_s;
+  float c, c_c, c_s;
   float h;
   int r, b, t;
-  int n, k; 
+  int n,j; 
 
     // valeurs par defaut
   h = 1.0;
@@ -135,7 +149,8 @@ int main(int argc, char *argv[]) {
   if (argc > 4)
     c_s = atof(argv[4]);
   
-  r = b = t = 0;
+  c = c_s + c_c; 
+  r = b = t = j = 0;
   
   // affichage des parametres pour verificatrion
   printf("Épaisseur de la plaque : %4.g\n", h);
@@ -145,10 +160,13 @@ int main(int argc, char *argv[]) {
 
   float* absorbed_CPU;
   float* absorbed_GPU;
+  int* result_CPU; 
+  int* result_GPU;
+  
   curandState* devStates;
 
   /* Définition du nombre de threads et de la taille de la grille */
-  dim3 NbThreadsParBloc(128,1,1); dim3 NbBlocks; 
+  dim3 NbThreadsParBloc(256,1,1); dim3 NbBlocks; 
   NbBlocks.x = iDivUp(n,NbThreadsParBloc.x);
   NbBlocks.y = 1;
   NbBlocks.z = 1;
@@ -156,23 +174,26 @@ int main(int argc, char *argv[]) {
   /* Allocation de la mémoire */
   absorbed_CPU = (float *) calloc(n,sizeof(float)); //sur CPU 
   cudaMalloc((void**) &absorbed_GPU, n*sizeof(float)); //sur GPU
-  cudaMalloc (&devStates, n*sizeof(curandState));
+  cudaMalloc (&devStates, NbThreadsParBloc.x*NbBlocks.x*sizeof(curandState));
+  cudaMalloc((void**) &result_GPU, 4*sizeof(int));
+  result_CPU = (int *) calloc(4,sizeof(int)); //sur CPU
 
   // debut du chronometrage
   start = my_gettimeofday();
 
-  setup_kernel <<<NbBlocks,NbThreadsParBloc.x>>> (devStates,unsigned(time(NULL)));  //initialisation de l'état curandState pour chaque thread 
-
-  for(k=0; k<NbBlocks ; k++) 
-  {
-    kernel<<<NbBlocks, NbThreadsParBloc.x>>>(&devStates, absorbed_GPU, h, n, c, c_c, c_s, r, t, b); //génération des positions absorbed pour GPU
-    //on renvoie aussi r, t et b pour l'affichage plus loin dans le code 
-  }
-
+  setup_kernel <<<NbBlocks,NbThreadsParBloc>>> (devStates,unsigned(time(NULL)));  //initialisation de l'état curandState pour chaque thread
+  kernel<<<NbBlocks, NbThreadsParBloc>>>(devStates, absorbed_GPU, h, n, c, c_c, c_s, result_GPU); //génération des positions absorbed pour GPU
+   //on renvoie aussi r, t et b pour l'affichage plus loin dans le code 
+  
   cudaMemcpy(absorbed_CPU, absorbed_GPU, n*sizeof(float), cudaMemcpyDeviceToHost); //copie du absorbed GPU dans CPU 
-
+  cudaMemcpy(result_CPU, result_GPU, 4*sizeof(int), cudaMemcpyDeviceToHost);
   // fin du chronometrage
   finish = my_gettimeofday();
+
+  r = result_GPU[0]; 
+  b = result_GPU[1]; 
+  t = result_GPU[2]; 
+  j = result_GPU[3];
 
   printf("\nPourcentage des neutrons refléchis : %4.2g\n", (float) r / (float) n);
   printf("Pourcentage des neutrons absorbés : %4.2g\n", (float) b / (float) n);
@@ -181,9 +202,27 @@ int main(int argc, char *argv[]) {
   printf("\nTemps total de calcul: %.8g sec\n", finish - start);
   printf("Millions de neutrons /s: %.2g\n", (double) n / ((finish - start)*1e6));
 
+  // ouverture du fichier pour ecrire les positions des neutrons absorbés
+  FILE *f_handle = fopen(OUTPUT_FILE, "w");
+  if (!f_handle) {
+     fprintf(stderr, "Cannot open " OUTPUT_FILE "\n");
+     exit(EXIT_FAILURE);
+		 }
+
+  for (j = 0; j < b; j++)
+     fprintf(f_handle, "%f\n", absorbed_CPU[j]);
+
+  // fermeture du fichier
+  fclose(f_handle);
+  printf("Result written in " OUTPUT_FILE "\n"); 
+
+
   cudaFree(absorbed_GPU); 
   cudaFree(devStates);
-  free(absorbed_CPU); 
+  cudaFree(result_GPU);
+  free(result_CPU); 
+  free(absorbed_CPU);
+
 
   return EXIT_SUCCESS;
 }
