@@ -72,8 +72,6 @@ __device__ float generate(curandState* globalState, int ind)
 
 __global__ void kernel(curandState* globalState, float* absorbed, float h, float n, float c, float c_c, float c_s, int* result) //uniquement les elements qui sont intialisés dans le main + r b et t
 {
-  float d = 0.0; 
-  float x = 0.0; 
   float L;
   float u;
   int i = blockDim.x*blockIdx.x + threadIdx.x; //sert de compteur 
@@ -81,9 +79,10 @@ __global__ void kernel(curandState* globalState, float* absorbed, float h, float
   int r_updated = 0, t_updated = 0, b_updated = 0;     
   //r, b, t, j res[0], res[1], res[2], res[3]
   
-while(i<n){
+while(i<n){  
   while (1) {
-
+    float d = 0.0; //direction
+    float x = 0.0; //position du neutron
     u = generate(globalState,i); 
     L = -(1 / c) * log(u);
     x = x + L * cos(d);
@@ -107,7 +106,8 @@ while(i<n){
     }
   }
   i += gridDim.x*blockDim.x; //on ajoute le nombre de threads par bloc 
-  //atomicAdd fait du séquentiel, l'idée est qu'un thread traite plusieurs neutrons et puis quand il a fini, il update r, b et t donc les tableaux. Utiliser cette méthode permet de réduire le nombre d'atomicAdd et donc le temps de calcul
+
+//atomicAdd fait du séquentiel, l'idée est qu'un thread traite plusieurs neutrons et puis quand il a fini, il update r, b et t donc les tableaux. Utiliser cette méthode permet de réduire le nombre d'atomicAdd et donc le temps de calcul
   atomicAdd(result,r_updated); // le pb est qu'on a de l'interaction grace a atomicAdd or CUDA essaye d'éviter cela 
   atomicAdd(result+1,b_updated);
  atomicAdd(result+2,t_updated);
@@ -174,10 +174,13 @@ int main(int argc, char *argv[]) {
   /* Allocation de la mémoire */
   absorbed_CPU = (float *) calloc(n,sizeof(float)); //sur CPU 
   cudaMalloc((void**) &absorbed_GPU, n*sizeof(float)); //sur GPU
-  cudaMalloc (&devStates, NbThreadsParBloc.x*NbBlocks.x*sizeof(curandState));
+  cudaMalloc (&devStates, n*sizeof(curandState));
   cudaMalloc((void**) &result_GPU, 4*sizeof(int));
   result_CPU = (int *) calloc(4,sizeof(int)); //sur CPU
 
+  cudaMemcpy(result_CPU,result_GPU,4*sizeof(int), cudaMemcpyHostToDevice); //pour copier result_CPU dans result_GPU
+  cudaMemcpy(absorbed_CPU,absorbed_GPU,n*sizeof(float), cudaMemcpyHostToDevice); //pour copier result_CPU dans result_GPU
+    
   // debut du chronometrage
   start = my_gettimeofday();
 
@@ -190,10 +193,10 @@ int main(int argc, char *argv[]) {
   // fin du chronometrage
   finish = my_gettimeofday();
 
-  r = result_GPU[0]; 
-  b = result_GPU[1]; 
-  t = result_GPU[2]; 
-  j = result_GPU[3];
+  r = result_CPU[0]; 
+  b = result_CPU[1]; 
+  t = result_CPU[2]; 
+  j = result_CPU[3];
 
   printf("\nPourcentage des neutrons refléchis : %4.2g\n", (float) r / (float) n);
   printf("Pourcentage des neutrons absorbés : %4.2g\n", (float) b / (float) n);
@@ -207,7 +210,7 @@ int main(int argc, char *argv[]) {
   if (!f_handle) {
      fprintf(stderr, "Cannot open " OUTPUT_FILE "\n");
      exit(EXIT_FAILURE);
-		 }
+     }
 
   for (j = 0; j < b; j++)
      fprintf(f_handle, "%f\n", absorbed_CPU[j]);
