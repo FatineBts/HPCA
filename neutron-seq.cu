@@ -72,18 +72,22 @@ __device__ float generate(curandState* globalState, int ind)
 
 __global__ void kernel(curandState* globalState, float* absorbed, float h, float n, float c, float c_c, float c_s, int* result) //uniquement les elements qui sont intialisés dans le main + r b et t
 {
+  float d; 
+  float x; 
   float L;
   float u;
-  int i = blockDim.x*blockIdx.x + threadIdx.x; //sert de compteur 
+  int i = blockDim.x*blockIdx.x + threadIdx.x; //sert de compteur
+  int gi = i;
   int prev; 
   int r_updated = 0, t_updated = 0, b_updated = 0;     
   //r, b, t, j res[0], res[1], res[2], res[3]
   
-while(i<n){  
+while(i<n){
+    d = 0.0; 
+    x = 0.0; 
+  
   while (1) {
-    float d = 0.0; //direction
-    float x = 0.0; //position du neutron
-    u = generate(globalState,i); 
+    u = generate(globalState,gi); 
     L = -(1 / c) * log(u);
     x = x + L * cos(d);
     if (x < 0) { //reflechi
@@ -94,23 +98,22 @@ while(i<n){
       t_updated++;
       break;
     } 
-    else if ((u = generate(globalState,i)) < c_c / c) { //absorbé
+    else if ((u = generate(globalState,gi)) < c_c / c) { //absorbé
       b_updated++;
       prev = atomicAdd(result+3,1); //communication interphread pas possible donc on veut l'atomicAdd pour pas écrire de manière concurente (on donne la main à 1 thread) 
       absorbed[prev] = x; //ceci s'applique car on a besoin d'un stockage contigu. On utilise la variable prev car on l'incrementation se fait en 2 étapes donc on doit lui donner le temps
       break;
     } 
     else {
-      u = generate(globalState,i);
+      u = generate(globalState,gi);
       d = u * M_PI; //direction
     }
   }
-  i += gridDim.x*blockDim.x; //on ajoute le nombre de threads par bloc 
-
-//atomicAdd fait du séquentiel, l'idée est qu'un thread traite plusieurs neutrons et puis quand il a fini, il update r, b et t donc les tableaux. Utiliser cette méthode permet de réduire le nombre d'atomicAdd et donc le temps de calcul
+  i += gridDim.x*blockDim.x; //on ajoute le nombre de threads par bloc
+  //atomicAdd fait du séquentiel, l'idée est qu'un thread traite plusieurs neutrons et puis quand il a fini, il update r, b et t donc les tableaux. Utiliser cette méthode permet de réduire le nombre d'atomicAdd et donc le temps de calcul
   atomicAdd(result,r_updated); // le pb est qu'on a de l'interaction grace a atomicAdd or CUDA essaye d'éviter cela 
   atomicAdd(result+1,b_updated);
- atomicAdd(result+2,t_updated);
+  atomicAdd(result+2,t_updated);
  }//second while
 }
 
@@ -173,14 +176,14 @@ int main(int argc, char *argv[]) {
 
   /* Allocation de la mémoire */
   absorbed_CPU = (float *) calloc(n,sizeof(float)); //sur CPU 
-  cudaMalloc((void**) &absorbed_GPU, n*sizeof(float)); //sur GPU
-  cudaMalloc (&devStates, n*sizeof(curandState));
-  cudaMalloc((void**) &result_GPU, 4*sizeof(int));
   result_CPU = (int *) calloc(4,sizeof(int)); //sur CPU
+  cudaMalloc((void**) &absorbed_GPU, n*sizeof(float)); //sur GPU
+  cudaMalloc (&devStates, NbThreadsParBloc.x*NbBlocks.x*sizeof(curandState));
+  cudaMalloc((void**) &result_GPU, 4*sizeof(int));
 
-  cudaMemcpy(result_CPU,result_GPU,4*sizeof(int), cudaMemcpyHostToDevice); //pour copier result_CPU dans result_GPU
-  cudaMemcpy(absorbed_CPU,absorbed_GPU,n*sizeof(float), cudaMemcpyHostToDevice); //pour copier result_CPU dans result_GPU
-    
+  cudaMemcpy(absorbed_CPU, absorbed_GPU, n*sizeof(float), cudaMemcpyHostToDevice); //copie du absorbed CPU dans GPU 
+  cudaMemcpy(result_CPU, result_GPU, 4*sizeof(int), cudaMemcpyHostToDevice);
+
   // debut du chronometrage
   start = my_gettimeofday();
 
@@ -210,11 +213,11 @@ int main(int argc, char *argv[]) {
   if (!f_handle) {
      fprintf(stderr, "Cannot open " OUTPUT_FILE "\n");
      exit(EXIT_FAILURE);
-     }
-
+		 }
+  
   for (j = 0; j < b; j++)
      fprintf(f_handle, "%f\n", absorbed_CPU[j]);
-
+  
   // fermeture du fichier
   fclose(f_handle);
   printf("Result written in " OUTPUT_FILE "\n"); 
