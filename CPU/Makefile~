@@ -1,5 +1,5 @@
-SRCS = neutron-gpu.cu
-EXE_NAME = neutron-gpu
+SRCS = neutron-cpu.cu
+EXE_NAME = neutron-cpu
 
 NVCC=nvcc  
 LIB=-lm -L/usr/local/cuda/lib64/ -lcuda -lcudart -lcurand
@@ -21,4 +21,4 @@ clean:
 	rm -f ${EXE_NAME} *.o *~
 
 exec: 
-	./neutron-gpu 1.0 500000000 0.5 0.5 15000
+	./neutron-cpu 1.0 500000000 0.5 0.5 15000
