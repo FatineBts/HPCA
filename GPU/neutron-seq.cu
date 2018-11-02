@@ -8,18 +8,20 @@
 #include <curand_kernel.h>
 
 #define OUTPUT_FILE "/tmp/absorbed.dat"
+#define NbpaquetN 512
 
 char info[] = "\
 Usage:\n\
-    neutron-seq H Nb C_c C_s\n\
+    neutron-seq H Nb C_c C_s paquetN\n\
 \n\
     H  : épaisseur de la plaque\n\
     Nb : nombre d'échantillons\n\
     C_c: composante absorbante\n\
     C_s: componente diffusante\n\
+    paquetN: Nombre de neutrons traités par 1 thread\n\
 \n\
 Exemple d'execution : \n\
-    neutron-seq 1.0 500000000 0.5 0.5\n\
+    neutron-seq 1.0 500000000 0.5 0.5 200\n\
 ";
 
 /*
@@ -30,7 +32,6 @@ static int iDivUp(int a, int b){ //donne la division de a par b
   return ((a % b != 0) ? (a / b + 1) : (a / b));
 }
 
-
 /*
  * notre gettimeofday()
  */
@@ -39,10 +40,6 @@ double my_gettimeofday(){
   gettimeofday(&tmp_time, NULL);
   return tmp_time.tv_sec + (tmp_time.tv_usec* 1.0e-6L);
 }
-
-/*
-  Fonction qui va servir à initialiser des champs pour des nombres aléatoires avec des graines seed. Chaque thread aura un nombre aléatoire différent. 
-*/
 
 __global__ void setup_kernel(curandState* state, unsigned long seed)
 {
@@ -61,16 +58,15 @@ __global__ void setup_kernel(curandState* state, unsigned long seed)
   Fonction qui va servir à générer des nombres différents pour chaque thread. 
 */
 
-
 __device__ float generate(curandState* globalState, int ind) 
 {
     curandState localState = globalState[ind];
-    float RANDOM = curand_uniform( &localState );
+    float random = curand_uniform(&localState);
     globalState[ind] = localState;
-    return RANDOM;
+    return random;
 }
 
-__global__ void kernel(curandState* globalState, float* absorbed, float h, float n, float c, float c_c, float c_s, int* result) //uniquement les elements qui sont intialisés dans le main + r b et t
+__global__ void kernel(curandState* globalState, float* absorbed, float h, float n, float c, float c_c, float c_s, int paquetN, int* result) //uniquement les elements qui sont intialisés dans le main + r b et t
 {
   float d; 
   float x; 
@@ -78,50 +74,60 @@ __global__ void kernel(curandState* globalState, float* absorbed, float h, float
   float u;
   int i = blockDim.x*blockIdx.x + threadIdx.x; //sert de compteur
   int gi = i;
-  int prev; 
-  int r_updated = 0, t_updated = 0, b_updated = 0;     
-  //r, b, t, j res[0], res[1], res[2], res[3]
-  
-while(i<n){
-    d = 0.0; 
-    x = 0.0; 
-  
-  while (1) {
+  int prev;
+  __shared__ int r_local[NbpaquetN]; //taille du nombre de threads qu'il va nous falloir pour traiter paquetN neutrons par thread, comme on a imposé 512 threads par bloc dans le main, NbpaquetN vaudra 512, on aura donc 512 threads qui vont traiter chacun 1 paquetN donc 512 paquetN. Il s'agit du nombre de paquetN.  
+  __shared__ int t_local[NbpaquetN]; 
+  __shared__ int b_local[NbpaquetN];
+ r_local[threadIdx.x] = 0; //on initialise à zéro le tableau
+ t_local[threadIdx.x] = 0; 
+ b_local[threadIdx.x] = 0; 
+
+  int r_updated = 0, t_updated = 0, b_updated = 0;  
+
+  while(i<n){ //i doit s'incrémenter mais pas gi
+  d = 0.0; 
+  x = 0.0;
+  while (1) { 
     u = generate(globalState,gi); 
     L = -(1 / c) * log(u);
     x = x + L * cos(d);
-    if (x < 0) { //reflechi
-      r_updated++;
-      break;
+    if (x < 0) { //reflechi  
+    r_local[threadIdx.x] = r_local[threadIdx.x] + 1;
+     break;
     } 
-    else if (x >= h) { //transmis
-      t_updated++;
-      break;
+    else if (x >= h) { //transmis 
+    t_local[threadIdx.x] = t_local[threadIdx.x] + 1;
+    break;
     } 
     else if ((u = generate(globalState,gi)) < c_c / c) { //absorbé
-      b_updated++;
-      prev = atomicAdd(result+3,1); //communication interphread pas possible donc on veut l'atomicAdd pour pas écrire de manière concurente (on donne la main à 1 thread) 
-      absorbed[prev] = x; //ceci s'applique car on a besoin d'un stockage contigu. On utilise la variable prev car on l'incrementation se fait en 2 étapes donc on doit lui donner le temps
+     b_local[threadIdx.x] = b_local[threadIdx.x] + 1; 
+     prev = atomicAdd(result+3,1); //communication interphread pas possible donc on veut l'atomicAdd pour pas écrire de manière concurente (on donne la main à 1 thread) 
+     absorbed[prev] = x;
       break;
     } 
     else {
       u = generate(globalState,gi);
       d = u * M_PI; //direction
-    }
-  }
-  i += gridDim.x*blockDim.x; //on ajoute le nombre de threads par bloc
-  //atomicAdd fait du séquentiel, l'idée est qu'un thread traite plusieurs neutrons et puis quand il a fini, il update r, b et t donc les tableaux. Utiliser cette méthode permet de réduire le nombre d'atomicAdd et donc le temps de calcul
-  atomicAdd(result,r_updated); // le pb est qu'on a de l'interaction grace a atomicAdd or CUDA essaye d'éviter cela 
+    } 
+  } //boucle while(1)
+  i += (gridDim.x*blockDim.x); //nombre de threads dans une grille qui correspond ici à un bloc, on fait des sauts correspondants aux nombres de threads dans un bloc ce qui donne 512 
+}//while(i<n) //tant qu'on a pas traité tous les neutrons 
+
+  __syncthreads(); //synchronize the local threads writing to the local memory cache 
+
+if(threadIdx.x == 0){//le premier thread va faire les calculs 
+  for(int k = 0; k<blockDim.x; k++){
+    r_updated+=r_local[k]; 
+    b_updated+=b_local[k];
+    t_updated+=t_local[k];
+      }//boucle for     
+
+  atomicAdd(result,r_updated); 
   atomicAdd(result+1,b_updated);
   atomicAdd(result+2,t_updated);
- }//second while
-}
+}//fin if 
 
-/*
-  Liens utiles dont je me suis servie : 
-  - https://stackoverflow.com/questions/16619274/cuda-griddim-and-blockdim
-  - https://tcuvelier.developpez.com/tutoriels/gpgpu/cuda/introduction/?page=conclusions
-*/
+}//fin fonction
 
 int main(int argc, char *argv[]) {
 
@@ -135,13 +141,14 @@ int main(int argc, char *argv[]) {
   float h;
   int r, b, t;
   int n,j; 
-  int paquetN = 100;  //modifié
-
+  int paquetN;
+  
     // valeurs par defaut
   h = 1.0;
   n = 500000000;
   c_c = 0.5;
   c_s = 0.5;
+  paquetN = 200; 
 
   // recuperation des parametres
   if (argc > 1)
@@ -152,7 +159,8 @@ int main(int argc, char *argv[]) {
     c_c = atof(argv[3]);
   if (argc > 4)
     c_s = atof(argv[4]);
-  
+  if (argc > 5)
+     paquetN = atof(argv[5]);
   c = c_s + c_c; 
   r = b = t = j = 0;
   
@@ -161,28 +169,25 @@ int main(int argc, char *argv[]) {
   printf("Nombre d'échantillons  : %d\n", n);
   printf("C_c : %g\n", c_c);
   printf("C_s : %g\n", c_s);
-
   float* absorbed_CPU;
   float* absorbed_GPU;
   int* result_CPU; 
   int* result_GPU;
-  
+  //il s'agit du nombre de neutrons traités par 1 thread = nombres de neutrons dans un paquet. 
   curandState* devStates;
+  printf("paquetN : %d\n", paquetN);
 
   /* Définition du nombre de threads et de la taille de la grille */
-  dim3 NbThreadsParBloc(256,1,1); dim3 NbBlocks; dim3 TailleGrille; 
-  NbBlocks.x = iDivUp(n,NbThreadsParBloc.x);
+  dim3 NbThreadsParBloc(512,1,1); dim3 NbBlocks; 
+  NbBlocks.x = iDivUp(n/paquetN,NbThreadsParBloc.x); //on fait en sorte qu'au lieu qu'un thread traite 1 neutron, 1 thread va en traiter paquetN. On impose le nombre de threads par blocs à 512 et on cherche le nombre de blocs qu'il faudrait si on a n neutrons avec un paquet de neutrons traité par 1 thread égal à paquetN. Plus on augmente paquetN et plus n est petit et à priori plus la vitesse d'execution devrait être élevée.   
   NbBlocks.y = 1;
-  NbBlocks.z = 1;
-  TailleGrille.x = (n/paquetN)/NbThreadsParBloc.x;  //modifié
-  TailleGrille.y = 1;  //modifié
-  TailleGrille.z = 1;  //modifié
+  NbBlocks.z = 1;  
 
   /* Allocation de la mémoire */
   absorbed_CPU = (float *) calloc(n,sizeof(float)); //sur CPU 
   result_CPU = (int *) calloc(4,sizeof(int)); //sur CPU
   cudaMalloc((void**) &absorbed_GPU, n*sizeof(float)); //sur GPU
-  cudaMalloc (&devStates, TailleGrille.x*sizeof(curandState)); //modifié
+  cudaMalloc (&devStates, NbThreadsParBloc.x*NbBlocks.x*sizeof(curandState));
   cudaMalloc((void**) &result_GPU, 4*sizeof(int));
 
   cudaMemcpy(absorbed_CPU, absorbed_GPU, n*sizeof(float), cudaMemcpyHostToDevice); //copie du absorbed CPU dans GPU 
@@ -192,7 +197,7 @@ int main(int argc, char *argv[]) {
   start = my_gettimeofday();
 
   setup_kernel <<<NbBlocks,NbThreadsParBloc>>> (devStates,unsigned(time(NULL)));  //initialisation de l'état curandState pour chaque thread
-  kernel<<<NbBlocks, NbThreadsParBloc>>>(devStates, absorbed_GPU, h, n, c, c_c, c_s, result_GPU); //génération des positions absorbed pour GPU
+  kernel<<<NbBlocks, NbThreadsParBloc>>>(devStates, absorbed_GPU, h, n, c, c_c, c_s, paquetN, result_GPU); //génération des positions absorbed pour GPU
    //on renvoie aussi r, t et b pour l'affichage plus loin dans le code 
   
   cudaMemcpy(absorbed_CPU, absorbed_GPU, n*sizeof(float), cudaMemcpyDeviceToHost); //copie du absorbed GPU dans CPU 
@@ -203,6 +208,7 @@ int main(int argc, char *argv[]) {
   r = result_CPU[0]; 
   b = result_CPU[1]; 
   t = result_CPU[2]; 
+  j = result_CPU[3];
 
   printf("\nPourcentage des neutrons refléchis : %4.2g\n", (float) r / (float) n);
   printf("Pourcentage des neutrons absorbés : %4.2g\n", (float) b / (float) n);
@@ -216,7 +222,7 @@ int main(int argc, char *argv[]) {
   if (!f_handle) {
      fprintf(stderr, "Cannot open " OUTPUT_FILE "\n");
      exit(EXIT_FAILURE);
-		 }
+ }
   
   for (j = 0; j < b; j++)
      fprintf(f_handle, "%f\n", absorbed_CPU[j]);
