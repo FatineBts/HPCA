@@ -1,5 +1,5 @@
 /*
-* Université Pierre et Marie Curie
+ * Université Pierre et Marie Curie
  * Calcul de transport de neutrons
  * Version séquentielle
  */
@@ -9,23 +9,20 @@
 #include <math.h>
 #include <time.h>
 #include <sys/time.h>
-#include <omp.h> //pour openmp
 
-#define OUTPUT_FILE "/tmp/3302011/absorbed.dat"
-#define Nb_threads 8
+#define OUTPUT_FILE "/tmp/absorbed.dat"
 
 char info[] = "\
 Usage:\n\
-    neutron-cpu H Nb C_c C_s paquetN\n\
+    neutron-seq H Nb C_c C_s\n\
 \n\
     H  : épaisseur de la plaque\n\
     Nb : nombre d'échantillons\n\
     C_c: composante absorbante\n\
     C_s: componente diffusante\n\
-    paquetN: Nombre de neutrons traités par 1 thread\n\
 \n\
 Exemple d'execution : \n\
-    neutron-cpu 1.0 500000000 0.5 0.5 15000\n\
+    neutron-seq 1.0 500000000 0.5 0.5\n\
 ";
 
 /*
@@ -33,8 +30,8 @@ Exemple d'execution : \n\
  */
 struct drand48_data alea_buffer;
 
-void init_uniform_random_number(unsigned long seed) {
-  srand48_r(seed, &alea_buffer);
+void init_uniform_random_number() {
+  srand48_r(0, &alea_buffer);
 }
 
 float uniform_random_number() {
@@ -76,8 +73,6 @@ int main(int argc, char *argv[]) {
   // chronometrage
   double start, finish;
   int i, j = 0; // compteurs
-  int paquetN; 
-  int prev = 0; 
 
   if( argc == 1)
     fprintf( stderr, "%s\n", info);
@@ -97,9 +92,6 @@ int main(int argc, char *argv[]) {
     c_c = atof(argv[3]);
   if (argc > 4)
     c_s = atof(argv[4]);
-  if (argc > 5)
-     paquetN = atof(argv[5]);
-
   r = b = t = 0;
   c = c_c + c_s;
 
@@ -109,27 +101,20 @@ int main(int argc, char *argv[]) {
   printf("C_c : %g\n", c_c);
   printf("C_s : %g\n", c_s);
 
+
   float *absorbed;
   absorbed = (float *) calloc(n, sizeof(float));
-  paquetN = 15000; //bon nombre trouvé à la question d'avant  
-  printf("paquetN : %d\n", paquetN);
-  printf("Nb_threads : %d\n", Nb_threads);
 
   // debut du chronometrage
   start = my_gettimeofday();
 
-  omp_set_num_threads(Nb_threads);
-
-#pragma omp parallel private(d,x,u,L,i) reduction(+: r,b,t) shared(absorbed) //calcul reparti entre les threads
-{
- init_uniform_random_number(omp_get_num_threads());
-
-#pragma omp for schedule(static,paquetN) //pour fixer des blocs de paquetN traités 
-  for (i = 0; i < n; i++) { //l'indice i est privé par défaut 
+  init_uniform_random_number();
+  for (i = 0; i < n; i++) {
     d = 0.0;
     x = 0.0;
 
     while (1) {
+
       u = uniform_random_number();
       L = -(1 / c) * log(u);
       x = x + L * cos(d);
@@ -141,10 +126,7 @@ int main(int argc, char *argv[]) {
 	break;
       } else if ((u = uniform_random_number()) < c_c / c) {
 	b++;
-	prev = j; 
-    #pragma omp atomic 
-	j++; 
-	absorbed[prev] = x;
+	absorbed[j++] = x;
 	break;
       } else {
 	u = uniform_random_number();
@@ -152,12 +134,9 @@ int main(int argc, char *argv[]) {
       }
     }
   }
-}//fin pragma omp parallel
+
   // fin du chronometrage
   finish = my_gettimeofday();
-
-  printf("réfléchis = %d, absorbés = %d, transmis = %d\n", r, b, t);
-  printf("Total traité: %d\n", r + b + t);
 
   printf("\nPourcentage des neutrons refléchis : %4.2g\n", (float) r / (float) n);
   printf("Pourcentage des neutrons absorbés : %4.2g\n", (float) b / (float) n);
@@ -165,8 +144,6 @@ int main(int argc, char *argv[]) {
 
   printf("\nTemps total de calcul: %.8g sec\n", finish - start);
   printf("Millions de neutrons /s: %.2g\n", (double) n / ((finish - start)*1e6));
-  
-  /*
 
   // ouverture du fichier pour ecrire les positions des neutrons absorbés
   FILE *f_handle = fopen(OUTPUT_FILE, "w");
@@ -181,9 +158,9 @@ int main(int argc, char *argv[]) {
   // fermeture du fichier
   fclose(f_handle);
   printf("Result written in " OUTPUT_FILE "\n");
-*/
 
   free(absorbed);
+
   return EXIT_SUCCESS;
 }
 

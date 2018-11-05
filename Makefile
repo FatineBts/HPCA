@@ -1,9 +1,14 @@
-all:
-	make -C GPU
-	make -C CPU
-	make -C GPU_CPU
+SRCS = neutron-seq.c
+EXE_NAME = neutron-seq
+
+CC = gcc
+CFLAGS = -Wall -O3 # -std=c11
+LIBS = -lm
+
+all: ${EXE_NAME}
+
+% : %.c
+	$(CC) $(CFLAGS) $< -o $@ $(OBJECTS) $(LIBS)
 
 clean:
-	make clean -C GPU
-	make clean -C CPU
-	make clean -C GPU_CPU
+	rm -f ${EXE_NAME} *.o *~

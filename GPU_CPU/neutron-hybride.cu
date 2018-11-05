@@ -6,13 +6,14 @@
 #include <sys/time.h>
 #include <curand.h> //bibliothèque pour la generation de nombres aléatoires  
 #include <curand_kernel.h>
+#include <omp.h> //pour openmp
 
-#define OUTPUT_FILE "/tmp/3302011/absorbed.dat"
+#define OUTPUT_FILE "/tmp/absorbed.dat"
 #define NbpaquetN 512
 
 char info[] = "\
 Usage:\n\
-    neutron-gpu H Nb C_c C_s paquetN\n\
+    neutron-seq H Nb C_c C_s paquetN\n\
 \n\
     H  : épaisseur de la plaque\n\
     Nb : nombre d'échantillons\n\
@@ -21,7 +22,7 @@ Usage:\n\
     paquetN: Nombre de neutrons traités par 1 thread\n\
 \n\
 Exemple d'execution : \n\
-    neutron-gpu 1.0 500000000 0.5 0.5 200\n\
+    neutron-seq 1.0 500000000 0.5 0.5 200\n\
 ";
 
 /*
@@ -81,7 +82,8 @@ __global__ void kernel(curandState* globalState, float* absorbed, float h, float
  r_local[threadIdx.x] = 0; //on initialise à zéro le tableau
  t_local[threadIdx.x] = 0; 
  b_local[threadIdx.x] = 0; 
- int r_updated = 0, t_updated = 0, b_updated = 0;  
+
+  int r_updated = 0, t_updated = 0, b_updated = 0;  
 
   while(i<n){ //i doit s'incrémenter mais pas gi
   d = 0.0; 
@@ -147,7 +149,7 @@ int main(int argc, char *argv[]) {
   n = 500000000;
   c_c = 0.5;
   c_s = 0.5;
-  paquetN = 15000; 
+  paquetN = 200; 
 
   // recuperation des parametres
   if (argc > 1)
@@ -219,7 +221,6 @@ int main(int argc, char *argv[]) {
   printf("réfléchis = %d, absorbés = %d, transmis = %d\n", r, b,t);
   printf("Total traité: %d\n", r + b +t);
 
-/*
   // ouverture du fichier pour ecrire les positions des neutrons absorbés
   FILE *f_handle = fopen(OUTPUT_FILE, "w");
   if (!f_handle) {
@@ -233,7 +234,7 @@ int main(int argc, char *argv[]) {
   // fermeture du fichier
   fclose(f_handle);
   printf("Result written in " OUTPUT_FILE "\n"); 
-*/
+
 
   cudaFree(absorbed_GPU); 
   cudaFree(devStates);
