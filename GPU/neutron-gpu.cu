@@ -12,25 +12,16 @@
 
 char info[] = "\
 Usage:\n\
-    neutron-gpu H Nb C_c C_s paquetN\n\
+    neutron-gpu H Nb C_c C_s\n\
 \n\
     H  : épaisseur de la plaque\n\
     Nb : nombre d'échantillons\n\
     C_c: composante absorbante\n\
     C_s: componente diffusante\n\
-    paquetN: Nombre de neutrons traités par 1 thread\n\
 \n\
 Exemple d'execution : \n\
-    neutron-gpu 1.0 500000000 0.5 0.5 200\n\
+    neutron-gpu 1.0 500000000 0.5 0.5\n\
 ";
-
-/*
- * générateur uniforme de nombres aléatoires dans l'intervalle [0,1)
- */
-
-static int iDivUp(int a, int b){ //donne la division de a par b
-  return ((a % b != 0) ? (a / b + 1) : (a / b));
-}
 
 /*
  * notre gettimeofday()
@@ -66,7 +57,7 @@ __device__ float generate(curandState* globalState, int ind)
     return random;
 }
 
-__global__ void kernel(curandState* globalState, float* absorbed, float h, float n, float c, float c_c, float c_s, int paquetN, int* result) //uniquement les elements qui sont intialisés dans le main + r b et t
+__global__ void kernel(curandState* globalState, float* absorbed, float h, int n, float c, float c_c, float c_s, int paquetN, int* result) //uniquement les elements qui sont intialisés dans le main + r b et t
 {
   float d; 
   float x; 
@@ -78,10 +69,11 @@ __global__ void kernel(curandState* globalState, float* absorbed, float h, float
   __shared__ int r_local[NbpaquetN]; //taille du nombre de threads qu'il va nous falloir pour traiter paquetN neutrons par thread, comme on a imposé 512 threads par bloc dans le main, NbpaquetN vaudra 512, on aura donc 512 threads qui vont traiter chacun 1 paquetN donc 512 paquetN. Il s'agit du nombre de paquetN.  
   __shared__ int t_local[NbpaquetN]; 
   __shared__ int b_local[NbpaquetN];
- r_local[threadIdx.x] = 0; //on initialise à zéro le tableau
- t_local[threadIdx.x] = 0; 
- b_local[threadIdx.x] = 0; 
- int r_updated = 0, t_updated = 0, b_updated = 0;  
+  r_local[threadIdx.x] = 0; //on initialise à zéro le tableau
+  t_local[threadIdx.x] = 0; 
+  b_local[threadIdx.x] = 0; 
+  //int r_updated = 0, t_updated = 0, b_updated = 0;  
+  int r, t, b; 
 
   while(i<n){ //i doit s'incrémenter mais pas gi
   d = 0.0; 
@@ -112,21 +104,32 @@ __global__ void kernel(curandState* globalState, float* absorbed, float h, float
   i += (gridDim.x*blockDim.x); //nombre de threads dans une grille qui correspond ici à un bloc, on fait des sauts correspondants aux nombres de threads dans un bloc ce qui donne 512 
 }//while(i<n) //tant qu'on a pas traité tous les neutrons 
 
+ r_local[threadIdx.x] = r; 
+ t_local[threadIdx.x] = t; 
+ b_local[threadIdx.x] = b; 
   __syncthreads(); //synchronize the local threads writing to the local memory cache 
 
-if(threadIdx.x == 0){//le premier thread va faire les calculs 
-  for(int k = 0; k<blockDim.x; k++){
-    r_updated+=r_local[k]; 
-    b_updated+=b_local[k];
-    t_updated+=t_local[k];
-			}//boucle for     
+  int j = blockDim.x / 2; 
 
-  atomicAdd(result,r_updated); 
-  atomicAdd(result+1,b_updated);
-  atomicAdd(result+2,t_updated);
+  while(j>0)
+  {
+    if(threadIdx.x < j)
+    {
+      r_local[threadIdx.x]+=r_local[threadIdx.x+j];
+      t_local[threadIdx.x]+=t_local[threadIdx.x+j];
+      b_local[threadIdx.x]+=b_local[threadIdx.x+j];
+    }
+    j/=2; 
+    __syncthreads();
+  }
+
+if(threadIdx.x == 0){//le premier thread va faire les calculs 
+  atomicAdd(result,r_local[0]); 
+  atomicAdd(result+1,b_local[0]);
+  atomicAdd(result+2,t_local[0]);
 }//fin if 
 
-}//fin fonction
+}
 
 int main(int argc, char *argv[]) {
 
@@ -147,7 +150,6 @@ int main(int argc, char *argv[]) {
   n = 500000000;
   c_c = 0.5;
   c_s = 0.5;
-  paquetN = 15000; 
 
   // recuperation des parametres
   if (argc > 1)
@@ -162,7 +164,7 @@ int main(int argc, char *argv[]) {
      paquetN = atof(argv[5]);
   c = c_s + c_c; 
   r = b = t = j = 0;
-  
+
   // affichage des parametres pour verificatrion
   printf("Épaisseur de la plaque : %4.g\n", h);
   printf("Nombre d'échantillons  : %d\n", n);
@@ -177,8 +179,13 @@ int main(int argc, char *argv[]) {
   printf("paquetN : %d\n", paquetN);
 
   /* Définition du nombre de threads et de la taille de la grille */
-  dim3 NbThreadsParBloc(512,1,1); dim3 NbBlocks; 
-  NbBlocks.x = iDivUp(n/paquetN,NbThreadsParBloc.x); //on fait en sorte qu'au lieu qu'un thread traite 1 neutron, 1 thread va en traiter paquetN. On impose le nombre de threads par blocs à 512 et on cherche le nombre de blocs qu'il faudrait si on a n neutrons avec un paquet de neutrons traité par 1 thread égal à paquetN. Plus on augmente paquetN et plus n est petit et à priori plus la vitesse d'execution devrait être élevée.   
+  dim3 NbThreadsParBloc(NbpaquetN,1,1); dim3 NbBlocks;  
+
+  NbBlocks.x = NbpaquetN;//iDivUp(iDivUp(n,paquetN),NbThreadsParBloc.x); //on fait en sorte qu'au lieu qu'un thread traite 1 neutron, 1 thread va en traiter paquetN. On impose le nombre de threads par blocs à 512 et on cherche le nombre de blocs qu'il faudrait si on a n neutrons avec un paquet de neutrons traité par 1 thread égal à paquetN. Plus on augmente paquetN et plus n est petit et à priori plus la vitesse d'execution devrait être élevée.   
+  
+
+  //printf("n/paquetN %d\n",iDivUp(n,paquetN));
+  printf("nombre de blocs %4.2d\n",NbBlocks.x);
   NbBlocks.y = 1;
   NbBlocks.z = 1;  
 
