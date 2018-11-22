@@ -16,16 +16,15 @@
 
 char info[] = "\
 Usage:\n\
-    neutron-cpu H Nb C_c C_s paquetN\n\
+    neutron-cpu H Nb C_c C_s\n\
 \n\
     H  : épaisseur de la plaque\n\
     Nb : nombre d'échantillons\n\
     C_c: composante absorbante\n\
     C_s: componente diffusante\n\
-    paquetN: Nombre de neutrons traités par 1 thread\n\
 \n\
 Exemple d'execution : \n\
-    neutron-cpu 1.0 500000000 0.5 0.5 15000\n\
+    neutron-cpu 1.0 500000000 0.5 0.5\n\
 ";
 
 /*
@@ -76,7 +75,6 @@ int main(int argc, char *argv[]) {
   // chronometrage
   double start, finish;
   int i, j = 0; // compteurs
-  int paquetN; 
   int prev = 0; 
 
   if( argc == 1)
@@ -97,8 +95,6 @@ int main(int argc, char *argv[]) {
     c_c = atof(argv[3]);
   if (argc > 4)
     c_s = atof(argv[4]);
-  if (argc > 5)
-     paquetN = atof(argv[5]);
 
   r = b = t = 0;
   c = c_c + c_s;
@@ -111,8 +107,6 @@ int main(int argc, char *argv[]) {
 
   float *absorbed;
   absorbed = (float *) calloc(n, sizeof(float));
-  paquetN = 15000; //bon nombre trouvé à la question d'avant  
-  printf("paquetN : %d\n", paquetN);
   printf("Nb_threads : %d\n", Nb_threads);
 
   // debut du chronometrage
@@ -124,8 +118,8 @@ int main(int argc, char *argv[]) {
 {
  init_uniform_random_number(omp_get_num_threads());
 
-#pragma omp for schedule(static,paquetN) //pour fixer des blocs de paquetN traités 
-  for (i = 0; i < n; i++) { //l'indice i est privé par défaut 
+#pragma omp for schedule(static) 
+  for (i = 0; i < n; i++) {
     d = 0.0;
     x = 0.0;
 
@@ -134,21 +128,21 @@ int main(int argc, char *argv[]) {
       L = -(1 / c) * log(u);
       x = x + L * cos(d);
       if (x < 0) {
-	r++;
-	break;
+  r++;
+  break;
       } else if (x >= h) {
-	t++;
-	break;
+  t++;
+  break;
       } else if ((u = uniform_random_number()) < c_c / c) {
-	b++;
-	prev = j; 
+  b++;
+  prev = j; 
     #pragma omp atomic 
-	j++; 
-	absorbed[prev] = x;
-	break;
+  j++; 
+  absorbed[prev] = x;
+  break;
       } else {
-	u = uniform_random_number();
-	d = u * M_PI;
+  u = uniform_random_number();
+  d = u * M_PI;
       }
     }
   }
@@ -186,4 +180,3 @@ int main(int argc, char *argv[]) {
   free(absorbed);
   return EXIT_SUCCESS;
 }
-
