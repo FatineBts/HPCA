@@ -8,24 +8,21 @@
 #include <curand_kernel.h>
 
 #define OUTPUT_FILE "/tmp/3302011/absorbed.dat"
-#define NB_THREADS_PER_BLOCK 512
+#define NB_THREADS_PER_BLOCK 1024
+#define NB_BLOCKS 256
 
 char info[] = "\
 Usage:\n\
-    neutron-gpu H Nb C_c C_s nbthreads NbBlocks.x\n\
+    neutron-gpu H Nb C_c C_s\n\
 \n\
     H  : épaisseur de la plaque\n\
     Nb : nombre d'échantillons\n\
     C_c: composante absorbante\n\
     C_s: componente diffusante\n\
-    nbthreads : nombre de threads\n\
-    NbBlocks.x : dimension en x d'un bloc\n\
 \n\
 Exemple d'execution :\n\
-    neutron-gpu 1.0 500000000 0.5 0.5 256 256\n\
+    neutron-gpu 1.0 500000000 0.5 0.5\n\
 \n\
-Remarque :\n\
-    /!\\ il n'est pas possible de prendre nbthreads > 512 et NbBlocks.x > 1024\n\
 ";
 
 /*
@@ -66,7 +63,7 @@ __global__ void kernel(curandState* globalState, float* absorbed, float h, int n
   r_local[threadIdx.x] = 0; //on initialise à zéro le tableau
   t_local[threadIdx.x] = 0; 
   b_local[threadIdx.x] = 0;  
-
+    
   while(i<n){ //i doit s'incrémenter mais pas gi
   d = 0.0; 
   x = 0.0;
@@ -132,7 +129,6 @@ int main(int argc, char *argv[]) {
   float h;
   int r, b, t;
   int n,j; 
-  int nbthreads;
   dim3 NbBlocks;
   
     // valeurs par defaut
@@ -140,8 +136,6 @@ int main(int argc, char *argv[]) {
   n = 500000000;
   c_c = 0.5;
   c_s = 0.5;
-  nbthreads = 256;
-  NbBlocks.x = 256;
   
   // recuperation des parametres
   if (argc > 1)
@@ -152,11 +146,7 @@ int main(int argc, char *argv[]) {
     c_c = atof(argv[3]);
   if (argc > 4)
     c_s = atof(argv[4]);
-  if (argc > 5)
-    nbthreads = atof(argv[5]);
-  if (argc > 6)
-    NbBlocks.x = atof(argv[6]);
-
+  
   c = c_s + c_c; 
   r = b = t = j = 0;
 
@@ -172,9 +162,11 @@ int main(int argc, char *argv[]) {
   curandState* devStates;
 
   /* Définition du nombre de threads et de la taille de la grille */
-  dim3 NbThreadsParBloc(nbthreads,1,1);
+ 
+  dim3 NbThreadsParBloc(256,1,1);
+
+  NbBlocks.x = NB_BLOCKS;
   
-  printf("nombre de threads : %4.2d\n",nbthreads);
   printf("nombre de threads par bloc : %4.2d\n",NB_THREADS_PER_BLOCK);
   printf("nombre de blocs : %4.2d\n",NbBlocks.x);
 
@@ -200,6 +192,7 @@ int main(int argc, char *argv[]) {
   
   cudaMemcpy(absorbed_CPU, absorbed_GPU, n*sizeof(float), cudaMemcpyDeviceToHost); //copie du absorbed GPU dans CPU 
   cudaMemcpy(result_CPU, result_GPU, 4*sizeof(int), cudaMemcpyDeviceToHost);
+
   // fin du chronometrage
   finish = my_gettimeofday();
 
@@ -217,7 +210,6 @@ int main(int argc, char *argv[]) {
 
   printf("réfléchis = %d, absorbés = %d, transmis = %d\n", r, b,t);
   printf("Total traité: %d\n", r + b +t);
-
 /*
   // ouverture du fichier pour ecrire les positions des neutrons absorbés
   FILE *f_handle = fopen(OUTPUT_FILE, "w");
@@ -233,7 +225,6 @@ int main(int argc, char *argv[]) {
   fclose(f_handle);
   printf("Result written in " OUTPUT_FILE "\n"); 
 */
-
   cudaFree(absorbed_GPU); 
   cudaFree(devStates);
   cudaFree(result_GPU);
