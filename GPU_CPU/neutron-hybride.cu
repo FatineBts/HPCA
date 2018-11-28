@@ -6,26 +6,24 @@
 #include <sys/time.h>
 #include <curand.h> //bibliothèque pour la generation de nombres aléatoires  
 #include <curand_kernel.h>
+#include <omp.h>
 
 #define OUTPUT_FILE "/tmp/3302011/absorbed.dat"
-#define NB_THREADS_PER_BLOCK 512
+#define NB_THREADS_PER_BLOCK 1024
+#define NB_BLOCKS 256
+#define NbthreadsOmp 8
 
 char info[] = "\
 Usage:\n\
-    neutron-gpu H Nb C_c C_s nbthreads NbBlocks.x\n\
+    neutron-gpu H Nb C_c C_s\n\
 \n\
     H  : épaisseur de la plaque\n\
     Nb : nombre d'échantillons\n\
     C_c: composante absorbante\n\
     C_s: componente diffusante\n\
-    nbthreads : nombre de threads\n\
-    NbBlocks.x : dimension en x d'un bloc\n\
 \n\
-Exemple d'execution :\n\
-    neutron-gpu 1.0 500000000 0.5 0.5 256 256\n\
-\n\
-Remarque :\n\
-    /!\\ il n'est pas possible de prendre nbthreads > 512 et NbBlocks.x > 1024\n\
+    Exemple d'execution :\n\
+    neutron-gpu 1.0 500000000 0.5 0.5\n\
 ";
 
 /*
@@ -35,6 +33,18 @@ double my_gettimeofday(){
   struct timeval tmp_time;
   gettimeofday(&tmp_time, NULL);
   return tmp_time.tv_sec + (tmp_time.tv_usec* 1.0e-6L);
+}
+
+struct drand48_data alea_buffer;
+
+void init_uniform_random_number(int seed) {
+  srand48_r(seed + omp_get_thread_num(), &alea_buffer);
+}
+
+float uniform_random_number() {
+  double res = 0.0; 
+  drand48_r(&alea_buffer,&res);
+  return res;
 }
 
 __global__ void setup_kernel(curandState* state, unsigned long seed)
@@ -117,7 +127,7 @@ if(threadIdx.x == 0){//le premier thread va faire les calculs
   atomicAdd(result+1,b_local[0]);
   atomicAdd(result+2,t_local[0]);
 }//fin if 
-
+printf("result[0] interne",result[0]);
 }
 
 int main(int argc, char *argv[]) {
@@ -131,18 +141,22 @@ int main(int argc, char *argv[]) {
   float c, c_c, c_s;
   float h;
   int r, b, t;
-  int n,j; 
-  int nbthreads;
+  int n, i, j;
+  int n1;
+  float d, L, u, x;
+  int prev; 
   dim3 NbBlocks;
+  int r2, b2, t2, j2;
   
-    // valeurs par defaut
+  // valeurs par defaut
   h = 1.0;
   n = 500000000;
+  n1 = n - n/100; 
+  printf("n : %d\n",n); 
+  printf("n1 : %d\n",n1); 
   c_c = 0.5;
   c_s = 0.5;
-  nbthreads = 256;
-  NbBlocks.x = 256;
-  
+   
   // recuperation des parametres
   if (argc > 1)
     h = atof(argv[1]);
@@ -152,13 +166,10 @@ int main(int argc, char *argv[]) {
     c_c = atof(argv[3]);
   if (argc > 4)
     c_s = atof(argv[4]);
-  if (argc > 5)
-    nbthreads = atof(argv[5]);
-  if (argc > 6)
-    NbBlocks.x = atof(argv[6]);
 
   c = c_s + c_c; 
-  r = b = t = j = 0;
+  i = r = b = t = j = 0;
+  r2 = b2 = t2 = j2 = 0;
 
   // affichage des parametres pour verificatrion
   printf("Épaisseur de la plaque : %4.g\n", h);
@@ -167,50 +178,113 @@ int main(int argc, char *argv[]) {
   printf("C_s : %g\n", c_s);
   float* absorbed_CPU;
   float* absorbed_GPU;
-  int* result_CPU; 
-  int* result_GPU;
-  curandState* devStates;
+  float* absorbed_CPU2; 
 
-  /* Définition du nombre de threads et de la taille de la grille */
-  dim3 NbThreadsParBloc(nbthreads,1,1);
+  int* result_CPU; 
+  int* result_GPU; 
+  curandState* devStates;
   
-  printf("nombre de threads : %4.2d\n",nbthreads);
+  /* Définition du nombre de threads et de la taille de la grille */
+  dim3 NbThreadsParBloc(256,1,1);
+
+  NbBlocks.x = NB_BLOCKS;
+  NbBlocks.y = 1;
+  NbBlocks.z = 1;
+
   printf("nombre de threads par bloc : %4.2d\n",NB_THREADS_PER_BLOCK);
   printf("nombre de blocs : %4.2d\n",NbBlocks.x);
+  printf("NbthreadsOmp : %4.2d\n",NbthreadsOmp); 
 
-  NbBlocks.y = 1;
-  NbBlocks.z = 1; 
-
+ // printf("allocation de mémoire"); 
   /* Allocation de la mémoire */
   absorbed_CPU = (float *) calloc(n,sizeof(float)); //sur CPU 
   result_CPU = (int *) calloc(4,sizeof(int)); //sur CPU
-  cudaMalloc((void**) &absorbed_GPU, n*sizeof(float)); //sur GPU
+  absorbed_CPU2 = (float *) calloc(n1,sizeof(float)); //sur CPU 
+  
+  cudaMalloc((void**) &absorbed_GPU, n1*sizeof(float)); //sur GPU 
   cudaMalloc (&devStates, NbThreadsParBloc.x*NbBlocks.x*sizeof(curandState));
   cudaMalloc((void**) &result_GPU, 4*sizeof(int));
-
-  cudaMemcpy(absorbed_CPU, absorbed_GPU, n*sizeof(float), cudaMemcpyHostToDevice); //copie du absorbed CPU dans GPU 
+  
+  //host = CPU - Device = GPU
+  cudaMemcpy(absorbed_CPU2, absorbed_GPU, n1*sizeof(float), cudaMemcpyHostToDevice); //copie du absorbed CPU dans GPU 
   cudaMemcpy(result_CPU, result_GPU, 4*sizeof(int), cudaMemcpyHostToDevice);
 
   // debut du chronometrage
   start = my_gettimeofday();
-
-  setup_kernel <<<NbBlocks,NbThreadsParBloc>>> (devStates,unsigned(time(NULL)));  //initialisation de l'état curandState pour chaque thread
-  kernel<<<NbBlocks, NbThreadsParBloc>>>(devStates, absorbed_GPU, h, n, c, c_c, c_s, result_GPU); //génération des positions absorbed pour GPU
-   //on renvoie aussi r, t et b pour l'affichage plus loin dans le code 
+  omp_set_num_threads(NbthreadsOmp);
+  printf("thread début : %d\n",omp_get_thread_num());
   
-  cudaMemcpy(absorbed_CPU, absorbed_GPU, n*sizeof(float), cudaMemcpyDeviceToHost); //copie du absorbed GPU dans CPU 
-  cudaMemcpy(result_CPU, result_GPU, 4*sizeof(int), cudaMemcpyDeviceToHost);
-  // fin du chronometrage
+//#pragma omp parallel
+//{
+ init_uniform_random_number(omp_get_num_threads());
+ printf("thread GPU : %d\n",omp_get_thread_num()); 
+
+ //#pragma omp master
+ printf("numéro du thread dans master : %d\n",omp_get_thread_num());  
+ setup_kernel <<<NbBlocks,NbThreadsParBloc>>> (devStates,unsigned(time(NULL)));  //initialisation de l'état curandState pour chaque thread
+ kernel<<<NbBlocks, NbThreadsParBloc>>>(devStates, absorbed_GPU, h, n1, c, c_c, c_s, result_GPU); //génération des positions absorbed pour GPU
+
+ cudaMemcpy(absorbed_CPU2, absorbed_GPU, n1*sizeof(float), cudaMemcpyDeviceToHost); //copie du absorbed GPU dans CPU 
+ cudaMemcpy(result_CPU, result_GPU, 4*sizeof(int), cudaMemcpyDeviceToHost);
+//}
+
+//partie CPU 
+#pragma omp parallel 
+{
+#pragma omp for reduction(+: r2,b2,t2) private(d,x,u,L,i)   
+ for (i = 0; i <(n-n1); i++) {  
+//    printf("i :%d\n",i);
+    d = 0.0;
+    x = 0.0;
+
+    while (1) {
+      u = uniform_random_number();
+      L = -(1 / c) * log(u);
+      x = x + L * cos(d);
+      if (x < 0) {
+      r2++;
+      break;
+      } else if (x >= h) {
+      t2++;
+      break;
+      } else if ((u = uniform_random_number()) < c_c / c) {
+      b2++;
+      prev = j2; 
+      #pragma omp atomic 
+      j2++; 
+      absorbed_CPU[prev] = x;
+      break;
+      } else {
+      u = uniform_random_number();
+      d = u * M_PI;
+      }
+    }
+  }
+}//pragma omp parallel
+
+for(i=(n-n1); i<n; i++)
+{ 
+  absorbed_CPU[i] = absorbed_CPU2[i]; 
+}
+
+// fin du chronometrage
   finish = my_gettimeofday();
 
-  r = result_CPU[0]; 
-  b = result_CPU[1]; 
-  t = result_CPU[2]; 
-  j = result_CPU[3];
+  printf("r2 : %d\n",r2);
+  printf("b2 : %d\n",b2);
+  printf("t2 : %d\n",t2);
 
-  printf("\nPourcentage des neutrons refléchis : %4.2g\n", (float) r / (float) n);
-  printf("Pourcentage des neutrons absorbés : %4.2g\n", (float) b / (float) n);
-  printf("Pourcentage des neutrons transmis : %4.2g\n", (float) t / (float) n);
+  printf("r2 + b2 + t2 : %d\n", r2 + b2 + t2);
+  printf("result_CPU[0] + ... : %d\n", result_CPU[0] + result_CPU[1] + result_CPU[2]);
+  
+  r = result_CPU[0] + r2; 
+  b = result_CPU[1] + b2; 
+  t = result_CPU[2] + t2; 
+  j = result_CPU[3] + j2;
+
+  printf("\nPourcentage des neutrons refléchis : %4.2g\n", (float) r / (float)(n));
+  printf("Pourcentage des neutrons absorbés : %4.2g\n", (float) b / (float) (n));
+  printf("Pourcentage des neutrons transmis : %4.2g\n", (float) t / (float) (n));
 
   printf("\nTemps total de calcul: %.8g sec\n", finish - start);
   printf("Millions de neutrons /s: %.2g\n", (double) n / ((finish - start)*1e6));
