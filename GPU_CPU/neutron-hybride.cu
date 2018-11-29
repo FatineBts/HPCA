@@ -11,7 +11,7 @@
 #define OUTPUT_FILE "/tmp/3302011/absorbed.dat"
 #define NB_THREADS_PER_BLOCK 1024
 #define NB_BLOCKS 256
-#define NbthreadsOmp 8
+#define NbthreadsOmp 32
 
 char info[] = "\
 Usage:\n\
@@ -22,8 +22,9 @@ Usage:\n\
     C_c: composante absorbante\n\
     C_s: componente diffusante\n\
 \n\
-    Exemple d'execution :\n\
+Exemple d'execution :\n\
     neutron-gpu 1.0 500000000 0.5 0.5\n\
+\n\
 ";
 
 /*
@@ -76,7 +77,7 @@ __global__ void kernel(curandState* globalState, float* absorbed, float h, int n
   r_local[threadIdx.x] = 0; //on initialise à zéro le tableau
   t_local[threadIdx.x] = 0; 
   b_local[threadIdx.x] = 0;  
-
+    
   while(i<n){ //i doit s'incrémenter mais pas gi
   d = 0.0; 
   x = 0.0;
@@ -127,7 +128,7 @@ if(threadIdx.x == 0){//le premier thread va faire les calculs
   atomicAdd(result+1,b_local[0]);
   atomicAdd(result+2,t_local[0]);
 }//fin if 
-printf("result[0] interne",result[0]);
+
 }
 
 int main(int argc, char *argv[]) {
@@ -141,22 +142,22 @@ int main(int argc, char *argv[]) {
   float c, c_c, c_s;
   float h;
   int r, b, t;
-  int n, i, j;
+  int n,j; 
   int n1;
+  int i; 
   float d, L, u, x;
-  int prev; 
   dim3 NbBlocks;
+  int prev = 0; 
   int r2, b2, t2, j2;
-  
-  // valeurs par defaut
+
+    // valeurs par defaut
   h = 1.0;
-  n = 500000000;
-  n1 = n - n/100; 
+  n = 500000000; 
   printf("n : %d\n",n); 
-  printf("n1 : %d\n",n1); 
+
   c_c = 0.5;
   c_s = 0.5;
-   
+  
   // recuperation des parametres
   if (argc > 1)
     h = atof(argv[1]);
@@ -166,11 +167,13 @@ int main(int argc, char *argv[]) {
     c_c = atof(argv[3]);
   if (argc > 4)
     c_s = atof(argv[4]);
-
+  
   c = c_s + c_c; 
-  i = r = b = t = j = 0;
+  r = b = t = j = 0;
   r2 = b2 = t2 = j2 = 0;
-
+  n1 = n - n/100;
+  printf("n1 : %d\n",n1); 
+  
   // affichage des parametres pour verificatrion
   printf("Épaisseur de la plaque : %4.g\n", h);
   printf("Nombre d'échantillons  : %d\n", n);
@@ -179,33 +182,31 @@ int main(int argc, char *argv[]) {
   float* absorbed_CPU;
   float* absorbed_GPU;
   float* absorbed_CPU2; 
-
   int* result_CPU; 
-  int* result_GPU; 
+  int* result_GPU;
   curandState* devStates;
-  
+ 
   /* Définition du nombre de threads et de la taille de la grille */
+ 
   dim3 NbThreadsParBloc(256,1,1);
 
   NbBlocks.x = NB_BLOCKS;
-  NbBlocks.y = 1;
-  NbBlocks.z = 1;
-
+  
   printf("nombre de threads par bloc : %4.2d\n",NB_THREADS_PER_BLOCK);
   printf("nombre de blocs : %4.2d\n",NbBlocks.x);
-  printf("NbthreadsOmp : %4.2d\n",NbthreadsOmp); 
 
- // printf("allocation de mémoire"); 
+  NbBlocks.y = 1;
+  NbBlocks.z = 1; 
+
   /* Allocation de la mémoire */
   absorbed_CPU = (float *) calloc(n,sizeof(float)); //sur CPU 
+  absorbed_CPU2 = (float *) calloc(n1,sizeof(float)); //sur CPU
+
   result_CPU = (int *) calloc(4,sizeof(int)); //sur CPU
-  absorbed_CPU2 = (float *) calloc(n1,sizeof(float)); //sur CPU 
-  
-  cudaMalloc((void**) &absorbed_GPU, n1*sizeof(float)); //sur GPU 
+  cudaMalloc((void**) &absorbed_GPU, n*sizeof(float)); //sur GPU
   cudaMalloc (&devStates, NbThreadsParBloc.x*NbBlocks.x*sizeof(curandState));
   cudaMalloc((void**) &result_GPU, 4*sizeof(int));
-  
-  //host = CPU - Device = GPU
+
   cudaMemcpy(absorbed_CPU2, absorbed_GPU, n1*sizeof(float), cudaMemcpyHostToDevice); //copie du absorbed CPU dans GPU 
   cudaMemcpy(result_CPU, result_GPU, 4*sizeof(int), cudaMemcpyHostToDevice);
 
@@ -213,27 +214,23 @@ int main(int argc, char *argv[]) {
   start = my_gettimeofday();
   omp_set_num_threads(NbthreadsOmp);
   printf("thread début : %d\n",omp_get_thread_num());
-  
-//#pragma omp parallel
-//{
+
+#pragma omp parallel
+{
  init_uniform_random_number(omp_get_num_threads());
  printf("thread GPU : %d\n",omp_get_thread_num()); 
 
- //#pragma omp master
- printf("numéro du thread dans master : %d\n",omp_get_thread_num());  
- setup_kernel <<<NbBlocks,NbThreadsParBloc>>> (devStates,unsigned(time(NULL)));  //initialisation de l'état curandState pour chaque thread
- kernel<<<NbBlocks, NbThreadsParBloc>>>(devStates, absorbed_GPU, h, n1, c, c_c, c_s, result_GPU); //génération des positions absorbed pour GPU
+ #pragma omp master
+ {
+   setup_kernel <<<NbBlocks,NbThreadsParBloc>>> (devStates,unsigned(time(NULL)));  //initialisation de l'état curandState pour chaque thread
+   kernel<<<NbBlocks, NbThreadsParBloc>>>(devStates, absorbed_GPU, h, n1, c, c_c, c_s, result_GPU); //génération des positions absorbed pour GPU
+  //on renvoie aussi r, t et b pour l'affichage plus loin dans le code 
+  cudaMemcpy(absorbed_CPU2, absorbed_GPU, n1*sizeof(float), cudaMemcpyDeviceToHost); //copie du absorbed GPU dans CPU 
+  cudaMemcpy(result_CPU, result_GPU, 4*sizeof(int), cudaMemcpyDeviceToHost);
+  }
 
- cudaMemcpy(absorbed_CPU2, absorbed_GPU, n1*sizeof(float), cudaMemcpyDeviceToHost); //copie du absorbed GPU dans CPU 
- cudaMemcpy(result_CPU, result_GPU, 4*sizeof(int), cudaMemcpyDeviceToHost);
-//}
-
-//partie CPU 
-#pragma omp parallel 
-{
 #pragma omp for reduction(+: r2,b2,t2) private(d,x,u,L,i)   
  for (i = 0; i <(n-n1); i++) {  
-//    printf("i :%d\n",i);
     d = 0.0;
     x = 0.0;
 
@@ -261,15 +258,8 @@ int main(int argc, char *argv[]) {
     }
   }
 }//pragma omp parallel
-
-for(i=(n-n1); i<n; i++)
-{ 
-  absorbed_CPU[i] = absorbed_CPU2[i]; 
-}
-
-// fin du chronometrage
-  finish = my_gettimeofday();
-
+printf("cpu après boucle\n");
+ 
   printf("r2 : %d\n",r2);
   printf("b2 : %d\n",b2);
   printf("t2 : %d\n",t2);
@@ -282,16 +272,19 @@ for(i=(n-n1); i<n; i++)
   t = result_CPU[2] + t2; 
   j = result_CPU[3] + j2;
 
-  printf("\nPourcentage des neutrons refléchis : %4.2g\n", (float) r / (float)(n));
-  printf("Pourcentage des neutrons absorbés : %4.2g\n", (float) b / (float) (n));
-  printf("Pourcentage des neutrons transmis : %4.2g\n", (float) t / (float) (n));
+
+  // fin du chronometrage
+  finish = my_gettimeofday();
+
+  printf("\nPourcentage des neutrons refléchis : %4.2g\n", (float) r / (float) n);
+  printf("Pourcentage des neutrons absorbés : %4.2g\n", (float) b / (float) n);
+  printf("Pourcentage des neutrons transmis : %4.2g\n", (float) t / (float) n);
 
   printf("\nTemps total de calcul: %.8g sec\n", finish - start);
   printf("Millions de neutrons /s: %.2g\n", (double) n / ((finish - start)*1e6));
 
   printf("réfléchis = %d, absorbés = %d, transmis = %d\n", r, b,t);
   printf("Total traité: %d\n", r + b +t);
-
 /*
   // ouverture du fichier pour ecrire les positions des neutrons absorbés
   FILE *f_handle = fopen(OUTPUT_FILE, "w");
@@ -307,13 +300,12 @@ for(i=(n-n1); i<n; i++)
   fclose(f_handle);
   printf("Result written in " OUTPUT_FILE "\n"); 
 */
-
   cudaFree(absorbed_GPU); 
   cudaFree(devStates);
   cudaFree(result_GPU);
   free(result_CPU); 
   free(absorbed_CPU);
-
+  free(absorbed_CPU2);
 
   return EXIT_SUCCESS;
 }
