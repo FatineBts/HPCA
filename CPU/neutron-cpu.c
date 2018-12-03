@@ -159,9 +159,7 @@ int main(int argc, char *argv[]) {
 
   printf("\nTemps total de calcul: %.8g sec\n", finish - start);
   printf("Millions de neutrons /s: %.2g\n", (double) n / ((finish - start)*1e6));
-  
-  /*
-
+   
   // ouverture du fichier pour ecrire les positions des neutrons absorbés
   FILE *f_handle = fopen(OUTPUT_FILE, "w");
   if (!f_handle) {
@@ -175,7 +173,6 @@ int main(int argc, char *argv[]) {
   // fermeture du fichier
   fclose(f_handle);
   printf("Result written in " OUTPUT_FILE "\n");
-*/
 
   free(absorbed);
   return EXIT_SUCCESS;
