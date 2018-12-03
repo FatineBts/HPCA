@@ -153,8 +153,6 @@ int main(int argc, char *argv[]) {
     // valeurs par defaut
   h = 1.0;
   n = 500000000; 
-  printf("n : %d\n",n); 
-
   c_c = 0.5;
   c_s = 0.5;
   
@@ -171,8 +169,7 @@ int main(int argc, char *argv[]) {
   c = c_s + c_c; 
   r = b = t = j = 0;
   r2 = b2 = t2 = j2 = 0;
-  n1 = n - n/100;
-  printf("n1 : %d\n",n1); 
+  n1 = n - n/100; 
   
   // affichage des parametres pour verificatrion
   printf("Épaisseur de la plaque : %4.g\n", h);
@@ -194,7 +191,11 @@ int main(int argc, char *argv[]) {
   
   printf("nombre de threads par bloc : %4.2d\n",NB_THREADS_PER_BLOCK);
   printf("nombre de blocs : %4.2d\n",NbBlocks.x);
-
+  printf("nombre de neutrons traités par le GPU : %d\n", n1);
+  int n2;
+  n2 = n - n1; 
+  printf("nombre de neutrons traités par le CPU : %d\n",n2);
+  
   NbBlocks.y = 1;
   NbBlocks.z = 1; 
 
@@ -215,7 +216,7 @@ int main(int argc, char *argv[]) {
   omp_set_num_threads(NbthreadsOmp);
   printf("thread début : %d\n",omp_get_thread_num());
 
-#pragma omp parallel
+#pragma omp parallel shared(absorbed_CPU)
 {
  init_uniform_random_number(omp_get_num_threads());
  printf("thread GPU : %d\n",omp_get_thread_num()); 
@@ -229,7 +230,7 @@ int main(int argc, char *argv[]) {
   cudaMemcpy(result_CPU, result_GPU, 4*sizeof(int), cudaMemcpyDeviceToHost);
   }
 
-#pragma omp for reduction(+: r2,b2,t2) private(d,x,u,L,i)   
+#pragma omp for reduction(+:j2,r2,b2,t2) private(d,x,u,L,i) schedule(static)
  for (i = 0; i <(n-n1); i++) {  
     d = 0.0;
     x = 0.0;
@@ -258,14 +259,11 @@ int main(int argc, char *argv[]) {
     }
   }
 }//pragma omp parallel
-printf("cpu après boucle\n");
- 
-  printf("r2 : %d\n",r2);
-  printf("b2 : %d\n",b2);
-  printf("t2 : %d\n",t2);
 
-  printf("r2 + b2 + t2 : %d\n", r2 + b2 + t2);
-  printf("result_CPU[0] + ... : %d\n", result_CPU[0] + result_CPU[1] + result_CPU[2]);
+  for(int k = 0; k<n1; k++)
+  {
+   absorbed_CPU[k] = absorbed_CPU2[k];  
+   }
   
   r = result_CPU[0] + r2; 
   b = result_CPU[1] + b2; 
