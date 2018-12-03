@@ -114,7 +114,7 @@ int main(int argc, char *argv[]) {
 
   omp_set_num_threads(Nb_threads);
 
-#pragma omp parallel private(d,x,u,L,i) reduction(+: r,b,t) shared(absorbed) //calcul reparti entre les threads
+#pragma omp parallel private(d,x,u,L,i) reduction(+: j,r,b,t) shared(absorbed) //calcul reparti entre les threads
 {
  init_uniform_random_number(omp_get_num_threads());
 
@@ -136,7 +136,7 @@ int main(int argc, char *argv[]) {
       } else if ((u = uniform_random_number()) < c_c / c) {
   b++;
   prev = j; 
-    #pragma omp atomic 
+        #pragma omp atomic 
   j++; 
   absorbed[prev] = x;
   break;
