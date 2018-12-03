@@ -285,7 +285,7 @@ printf("cpu après boucle\n");
 
   printf("réfléchis = %d, absorbés = %d, transmis = %d\n", r, b,t);
   printf("Total traité: %d\n", r + b +t);
-/*
+
   // ouverture du fichier pour ecrire les positions des neutrons absorbés
   FILE *f_handle = fopen(OUTPUT_FILE, "w");
   if (!f_handle) {
@@ -299,7 +299,7 @@ printf("cpu après boucle\n");
   // fermeture du fichier
   fclose(f_handle);
   printf("Result written in " OUTPUT_FILE "\n"); 
-*/
+
   cudaFree(absorbed_GPU); 
   cudaFree(devStates);
   cudaFree(result_GPU);
