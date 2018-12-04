@@ -14,4 +14,5 @@ clean:
 	rm -f ${EXE_NAME} *.o *~
 
 exec: 
-./neutron-hybride 1.0 500000000 0.5 0.5 
+	make
+	./neutron-hybride 1.0 500000000 0.5 0.5 
